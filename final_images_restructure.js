@@ -61,17 +61,31 @@ function findImageInOriginalFolder(savedImageName, originalImagesPath) {
 
 // 메인 재구성 함수
 async function restructureFinalImages() {
-    const dataFilePath = './final_data/backup_가방_2025-09-03.json';
+    const dataFolderPath = './final_data';
     const originalImagesPath = './final_images';
     const newImagesPath = './final_image_v2';
     
     console.log('🔄 이미지 폴더 재구성 시작...\n');
     
-    // 데이터 파일 확인
-    if (!fs.existsSync(dataFilePath)) {
-        console.error(`❌ 데이터 파일을 찾을 수 없습니다: ${dataFilePath}`);
+    // 데이터 폴더 확인
+    if (!fs.existsSync(dataFolderPath)) {
+        console.error(`❌ 데이터 폴더를 찾을 수 없습니다: ${dataFolderPath}`);
         return;
     }
+    
+    // 카테고리 파일들 찾기
+    const categoryFiles = fs.readdirSync(dataFolderPath)
+        .filter(file => file.endsWith('_products.json'))
+        .map(file => path.join(dataFolderPath, file));
+    
+    if (categoryFiles.length === 0) {
+        console.error('❌ 카테고리 데이터 파일을 찾을 수 없습니다.');
+        return;
+    }
+    
+    console.log(`📋 발견된 카테고리 파일: ${categoryFiles.length}개`);
+    categoryFiles.forEach(file => console.log(`   - ${path.basename(file)}`));
+    console.log();
     
     // 원본 이미지 폴더 확인
     if (!fs.existsSync(originalImagesPath)) {
@@ -87,106 +101,127 @@ async function restructureFinalImages() {
     fs.mkdirSync(newImagesPath, { recursive: true });
     
     try {
-        // JSON 파일 읽기
-        console.log('📖 데이터 파일 로딩 중...');
-        const rawData = fs.readFileSync(dataFilePath, 'utf8');
-        const data = JSON.parse(rawData);
-        
-        if (!data.products || !Array.isArray(data.products)) {
-            console.error('❌ 데이터 파일 형식이 올바르지 않습니다.');
-            return;
-        }
-        
-        console.log(`✅ ${data.products.length}개 상품 데이터 로드 완료\n`);
-        
-        const stats = {
-            total: data.products.length,
+        const totalStats = {
+            total: 0,
             success: 0,
             notFound: 0,
             error: 0,
             categories: {}
         };
         
-        // 각 상품 처리
-        for (let i = 0; i < data.products.length; i++) {
-            const product = data.products[i];
-            const progress = ((i + 1) / data.products.length * 100).toFixed(1);
+        // 각 카테고리 파일 처리
+        for (const categoryFile of categoryFiles) {
+            const categoryName = path.basename(categoryFile).replace('_products.json', '');
+            console.log(`\n🔄 ${categoryName} 카테고리 처리 중...`);
             
-            if (!product.savedImageName || !product.categoryName) {
-                console.log(`⚠️  [${progress}%] 건너뜀: 필수 정보 누락 - ${product.productName || 'Unknown'}`);
-                stats.error++;
+            // JSON 파일 읽기
+            const rawData = fs.readFileSync(categoryFile, 'utf8');
+            const data = JSON.parse(rawData);
+            
+            if (!data.products || !Array.isArray(data.products)) {
+                console.error(`❌ ${categoryName} 데이터 파일 형식이 올바르지 않습니다.`);
                 continue;
             }
             
-            try {
-                const category = product.categoryName;
-                const savedImageName = product.savedImageName;
-                const folderName = generateFolderName(savedImageName);
+            console.log(`📖 ${data.products.length}개 ${categoryName} 상품 로드 완료`);
+            
+            const categoryStats = {
+                total: data.products.length,
+                success: 0,
+                notFound: 0,
+                error: 0
+            };
+            
+            // 각 상품 처리
+            for (let i = 0; i < data.products.length; i++) {
+                const product = data.products[i];
+                const progress = ((i + 1) / data.products.length * 100).toFixed(1);
                 
-                // 카테고리별 통계 초기화
-                if (!stats.categories[category]) {
-                    stats.categories[category] = { success: 0, notFound: 0, error: 0 };
+                if (!product.savedImageName || !product.categoryName) {
+                    if (i % 500 === 0 || i === data.products.length - 1) {
+                        console.log(`⚠️  [${progress}%] 건너뜀: 필수 정보 누락`);
+                    }
+                    categoryStats.error++;
+                    continue;
                 }
                 
-                // 새 폴더 경로 생성
-                const categoryPath = path.join(newImagesPath, category);
-                const productFolderPath = path.join(categoryPath, folderName);
-                
-                // 폴더 생성
-                fs.mkdirSync(productFolderPath, { recursive: true });
-                
-                // 원본 이미지 파일 찾기
-                const originalImagePath = findImageInOriginalFolder(savedImageName, originalImagesPath);
-                
-                if (originalImagePath && fs.existsSync(originalImagePath)) {
-                    // 새 위치로 복사
-                    const newImagePath = path.join(productFolderPath, savedImageName);
-                    fs.copyFileSync(originalImagePath, newImagePath);
+                try {
+                    const category = product.categoryName;
+                    const savedImageName = product.savedImageName;
+                    const folderName = generateFolderName(savedImageName);
                     
-                    if (i % 100 === 0 || i === data.products.length - 1) {
-                        console.log(`✅ [${progress}%] ${category}/${folderName} 생성 완료`);
+                    // 새 폴더 경로 생성
+                    const categoryPath = path.join(newImagesPath, category);
+                    const productFolderPath = path.join(categoryPath, folderName);
+                    
+                    // 폴더 생성
+                    fs.mkdirSync(productFolderPath, { recursive: true });
+                    
+                    // 원본 이미지 파일 찾기
+                    const originalImagePath = findImageInOriginalFolder(savedImageName, originalImagesPath);
+                    
+                    if (originalImagePath && fs.existsSync(originalImagePath)) {
+                        // 새 위치로 복사
+                        const newImagePath = path.join(productFolderPath, savedImageName);
+                        fs.copyFileSync(originalImagePath, newImagePath);
+                        
+                        if (i % 500 === 0 || i === data.products.length - 1) {
+                            console.log(`✅ [${progress}%] ${category}/${folderName} 생성 완료`);
+                        }
+                        
+                        categoryStats.success++;
+                    } else {
+                        if (i % 1000 === 0) {
+                            console.log(`❌ [${progress}%] 이미지 찾을 수 없음: ${savedImageName}`);
+                        }
+                        categoryStats.notFound++;
                     }
                     
-                    stats.success++;
-                    stats.categories[category].success++;
-                } else {
-                    console.log(`❌ [${progress}%] 이미지 찾을 수 없음: ${savedImageName}`);
-                    // 빈 폴더라도 생성해두고 로그에 기록
-                    stats.notFound++;
-                    stats.categories[category].notFound++;
+                } catch (error) {
+                    if (i % 1000 === 0) {
+                        console.error(`❌ [${progress}%] 처리 중 오류: ${product.productName}`, error.message);
+                    }
+                    categoryStats.error++;
                 }
-                
-            } catch (error) {
-                console.error(`❌ [${progress}%] 처리 중 오류: ${product.productName}`, error.message);
-                stats.error++;
-                stats.categories[product.categoryName].error++;
             }
+            
+            // 카테고리별 결과 출력
+            console.log(`📊 ${categoryName} 완료: ✅ ${categoryStats.success}개 | ❌ ${categoryStats.notFound}개 | 🚫 ${categoryStats.error}개`);
+            
+            // 전체 통계에 합산
+            totalStats.total += categoryStats.total;
+            totalStats.success += categoryStats.success;
+            totalStats.notFound += categoryStats.notFound;
+            totalStats.error += categoryStats.error;
+            totalStats.categories[categoryName] = categoryStats;
         }
         
         // 결과 요약
-        console.log('\n📊 === 재구성 결과 요약 ===');
-        console.log(`🔸 총 상품 수: ${stats.total}개`);
-        console.log(`✅ 성공: ${stats.success}개 (${(stats.success/stats.total*100).toFixed(1)}%)`);
-        console.log(`❌ 이미지 없음: ${stats.notFound}개 (${(stats.notFound/stats.total*100).toFixed(1)}%)`);
-        console.log(`🚫 처리 오류: ${stats.error}개 (${(stats.error/stats.total*100).toFixed(1)}%)`);
+        console.log('\n📊 === 전체 재구성 결과 요약 ===');
+        console.log(`🔸 총 상품 수: ${totalStats.total}개`);
+        console.log(`✅ 성공: ${totalStats.success}개 (${(totalStats.success/totalStats.total*100).toFixed(1)}%)`);
+        console.log(`❌ 이미지 없음: ${totalStats.notFound}개 (${(totalStats.notFound/totalStats.total*100).toFixed(1)}%)`);
+        console.log(`🚫 처리 오류: ${totalStats.error}개 (${(totalStats.error/totalStats.total*100).toFixed(1)}%)`);
         
-        console.log('\n📋 === 카테고리별 결과 ===');
-        for (const [category, categoryStats] of Object.entries(stats.categories)) {
-            const total = categoryStats.success + categoryStats.notFound + categoryStats.error;
-            console.log(`${category}: 총 ${total}개 | ✅ ${categoryStats.success}개 | ❌ ${categoryStats.notFound}개 | 🚫 ${categoryStats.error}개`);
+        console.log('\n📋 === 카테고리별 상세 결과 ===');
+        for (const [categoryName, categoryStats] of Object.entries(totalStats.categories)) {
+            const total = categoryStats.total;
+            const successRate = (categoryStats.success/total*100).toFixed(1);
+            console.log(`${categoryName}: 총 ${total}개 | ✅ ${categoryStats.success}개 (${successRate}%) | ❌ ${categoryStats.notFound}개 | 🚫 ${categoryStats.error}개`);
         }
         
         // 상세 로그 저장
         const reportData = {
             timestamp: new Date().toISOString(),
-            summary: stats,
+            summary: totalStats,
             newStructurePath: newImagesPath,
-            originalStructurePath: originalImagesPath
+            originalStructurePath: originalImagesPath,
+            processedFiles: categoryFiles.map(file => path.basename(file))
         };
         
         fs.writeFileSync('final_images_restructure_report.json', JSON.stringify(reportData, null, 2));
         console.log('\n💾 상세 결과가 "final_images_restructure_report.json" 파일에 저장되었습니다.');
-        console.log(`\n🎉 이미지 폴더 재구성이 완료되었습니다!`);
+        console.log(`\n🎉 모든 카테고리 이미지 폴더 재구성이 완료되었습니다!`);
         console.log(`📁 새 폴더: ${newImagesPath}`);
         
     } catch (error) {
