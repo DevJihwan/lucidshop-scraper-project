@@ -147,12 +147,14 @@ async function restructureFinalImages() {
                 
                 try {
                     const category = product.categoryName;
+                    const brandName = product.brandName || '기타'; // 브랜드명이 없는 경우 '기타'로 분류
                     const savedImageName = product.savedImageName;
                     const folderName = generateFolderName(savedImageName);
                     
-                    // 새 폴더 경로 생성
+                    // 새 폴더 경로 생성 (카테고리/브랜드/상품폴더)
                     const categoryPath = path.join(newImagesPath, category);
-                    const productFolderPath = path.join(categoryPath, folderName);
+                    const brandPath = path.join(categoryPath, sanitizeFolderName(brandName));
+                    const productFolderPath = path.join(brandPath, folderName);
                     
                     // 폴더 생성
                     fs.mkdirSync(productFolderPath, { recursive: true });
@@ -166,7 +168,7 @@ async function restructureFinalImages() {
                         fs.copyFileSync(originalImagePath, newImagePath);
                         
                         if (i % 500 === 0 || i === data.products.length - 1) {
-                            console.log(`✅ [${progress}%] ${category}/${folderName} 생성 완료`);
+                            console.log(`✅ [${progress}%] ${category}/${brandName}/${folderName} 생성 완료`);
                         }
                         
                         categoryStats.success++;
@@ -244,28 +246,41 @@ function validateNewStructure() {
         .filter(dirent => dirent.isDirectory())
         .map(dirent => dirent.name);
     
+    let totalBrands = 0;
     let totalFolders = 0;
     let totalImages = 0;
     
     for (const category of categories) {
         const categoryPath = path.join(newImagesPath, category);
-        const productFolders = fs.readdirSync(categoryPath, { withFileTypes: true })
-            .filter(dirent => dirent.isDirectory());
+        const brands = fs.readdirSync(categoryPath, { withFileTypes: true })
+            .filter(dirent => dirent.isDirectory())
+            .map(dirent => dirent.name);
         
+        let categoryFolders = 0;
         let categoryImages = 0;
-        for (const folder of productFolders) {
-            const folderPath = path.join(categoryPath, folder.name);
-            const images = fs.readdirSync(folderPath)
-                .filter(file => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(file));
-            categoryImages += images.length;
+        
+        for (const brand of brands) {
+            const brandPath = path.join(categoryPath, brand);
+            const productFolders = fs.readdirSync(brandPath, { withFileTypes: true })
+                .filter(dirent => dirent.isDirectory());
+            
+            for (const folder of productFolders) {
+                const folderPath = path.join(brandPath, folder.name);
+                const images = fs.readdirSync(folderPath)
+                    .filter(file => /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(file));
+                categoryImages += images.length;
+            }
+            
+            categoryFolders += productFolders.length;
         }
         
-        console.log(`📁 ${category}: ${productFolders.length}개 폴더, ${categoryImages}개 이미지`);
-        totalFolders += productFolders.length;
+        console.log(`📁 ${category}: ${brands.length}개 브랜드, ${categoryFolders}개 상품 폴더, ${categoryImages}개 이미지`);
+        totalBrands += brands.length;
+        totalFolders += categoryFolders;
         totalImages += categoryImages;
     }
     
-    console.log(`\n📊 전체: ${totalFolders}개 상품 폴더, ${totalImages}개 이미지`);
+    console.log(`\n📊 전체: ${totalBrands}개 브랜드, ${totalFolders}개 상품 폴더, ${totalImages}개 이미지`);
 }
 
 // 스크립트 실행
