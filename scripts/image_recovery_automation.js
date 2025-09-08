@@ -14,9 +14,9 @@ function isRepresentativeImage(filename) {
 }
 
 function extractProductNumber(text) {
+    // 복합 번호(예: 786016_02_7711)를 단일 번호로 처리하도록 패턴 개선
     const patterns = [
-        /(\d{5,})_(\d{6,})/g,
-        /(\d{5,})/g
+        /(\d{5,}(?:_\d{2,}_\d{4,})?)/g // 5자리 이상 숫자 또는 숫자_숫자_숫자 패턴
     ];
     
     const numbers = [];
@@ -222,7 +222,7 @@ function processStructuredFolder(folderPath) {
             ((results.normalCount / results.totalProductFolders) * 100).toFixed(1) : '0';
             
     } catch (error) {
-        console.error('구조화된 폴더 처리 오료:', error.message);
+        console.error('구조화된 폴더 처리 오류:', error.message);
     }
     
     return results;
@@ -240,24 +240,26 @@ function findExactMatches(missingProduct, allImagesArray) {
     for (const imageInfo of allImagesArray) {
         if (imageInfo.source === 'final_image_v2') continue;
         
+        // 카테고리와 브랜드가 일치하는지 확인
         if (imageInfo.category !== missingInfo.category || 
             imageInfo.brand !== missingInfo.brand) {
             continue;
         }
         
+        // 제품 번호가 정확히 일치하는지 확인
         if (missingInfo.productNumbers.length > 0 && imageInfo.productNumbers.length > 0) {
-            const hasMatchingNumber = missingInfo.productNumbers.some(missingNum => 
-                imageInfo.productNumbers.some(imageNum => imageNum === missingNum)
-            );
+            // 두 배열을 정렬하여 일관된 비교 보장
+            const missingNumbers = [...missingInfo.productNumbers].sort();
+            const imageNumbers = [...imageInfo.productNumbers].sort();
             
-            if (hasMatchingNumber) {
+            // 배열 길이와 모든 번호가 일치하는지 확인
+            if (missingNumbers.length === imageNumbers.length && 
+                missingNumbers.every((num, index) => num === imageNumbers[index])) {
                 matches.push({
                     matchType: 'exact_number',
                     confidence: 100,
                     image: imageInfo,
-                    matchedNumbers: missingInfo.productNumbers.filter(missingNum => 
-                        imageInfo.productNumbers.includes(missingNum)
-                    )
+                    matchedNumbers: missingNumbers
                 });
             }
         }
@@ -512,9 +514,124 @@ function generatePriorityRecommendation(organizedMissing) {
     return priorities.slice(0, 20); // 상위 20개만 반환
 }
 
-// 스크립트 실행
-if (require.main === module) {
-    recoverImages();
+// 🗑️ 잘못 복구된 파일 삭제 함수
+function undoIncorrectRecoveries(logFile) {
+    console.log('🗑️ 잘못 복구된 파일 삭제 시작...\n');
+    
+    const undoResults = {
+        totalProcessed: 0,
+        deletedFiles: 0,
+        failedDeletions: 0,
+        skipped: 0,
+        undoLog: []
+    };
+    
+    try {
+        // 복구 로그 파일 읽기
+        if (!fs.existsSync(logFile)) {
+            console.error(`❌ 로그 파일을 찾을 수 없습니다: ${logFile}`);
+            return undoResults;
+        }
+        
+        const logData = JSON.parse(fs.readFileSync(logFile, 'utf8'));
+        const recoveryDetails = logData.recoveryDetails || [];
+        
+        for (const recovery of recoveryDetails) {
+            undoResults.totalProcessed++;
+            
+            const missingInfo = parseFromFolderStructure(
+                recovery.category,
+                recovery.brand,
+                recovery.productName
+            );
+            
+            const imageInfo = parseImageFileName(path.basename(recovery.sourceFile));
+            
+            // 제품 번호가 정확히 일치하는지 확인
+            const missingNumbers = [...missingInfo.productNumbers].sort();
+            const imageNumbers = [...imageInfo.productNumbers].sort();
+            
+            if (missingNumbers.length !== imageNumbers.length || 
+                !missingNumbers.every((num, index) => num === imageNumbers[index])) {
+                // 번호가 일치하지 않으면 삭제 대상
+                try {
+                    const targetFile = recovery.targetFile;
+                    if (fs.existsSync(targetFile)) {
+                        fs.unlinkSync(targetFile);
+                        undoResults.deletedFiles++;
+                        undoResults.undoLog.push({
+                            category: recovery.category,
+                            brand: recovery.brand,
+                            productName: recovery.productName,
+                            deletedFile: targetFile,
+                            sourceFile: recovery.sourceFile,
+                            matchedNumbers: recovery.matchedNumbers,
+                            reason: 'incomplete_number_match'
+                        });
+                        
+                        // 빈 폴더 정리
+                        const targetDir = path.dirname(targetFile);
+                        if (fs.existsSync(targetDir) && fs.readdirSync(targetDir).length === 0) {
+                            fs.rmdirSync(targetDir);
+                        }
+                    } else {
+                        undoResults.skipped++;
+                        undoResults.undoLog.push({
+                            category: recovery.category,
+                            brand: recovery.brand,
+                            productName: recovery.productName,
+                            deletedFile: targetFile,
+                            sourceFile: recovery.sourceFile,
+                            matchedNumbers: recovery.matchedNumbers,
+                            reason: 'file_already_missing'
+                        });
+                    }
+                } catch (error) {
+                    undoResults.failedDeletions++;
+                    console.error(`❌ 파일 삭제 실패: ${recovery.targetFile}`, error.message);
+                }
+            } else {
+                undoResults.skipped++;
+            }
+        }
+        
+        // 📊 삭제 결과 출력
+        console.log('\n📊 === 잘못된 복구 파일 삭제 완료 ===');
+        console.log(`처리된 항목: ${undoResults.totalProcessed}개`);
+        console.log(`✅ 삭제 성공: ${undoResults.deletedFiles}개`);
+        console.log(`⏭️ 이미 삭제됨/유효한 파일: ${undoResults.skipped}개`);
+        console.log(`❌ 삭제 실패: ${undoResults.failedDeletions}개`);
+        
+        // 💾 삭제 로그 저장
+        const timestamp = new Date().toISOString().split('T')[0];
+        fs.writeFileSync(`undo_recovery_log_${timestamp}.json`, JSON.stringify({
+            timestamp: new Date().toISOString(),
+            summary: {
+                totalProcessed: undoResults.totalProcessed,
+                deletedFiles: undoResults.deletedFiles,
+                failedDeletions: undoResults.failedDeletions,
+                skipped: undoResults.skipped
+            },
+            undoDetails: undoResults.undoLog
+        }, null, 2));
+        
+        console.log(`💾 삭제 로그: undo_recovery_log_${timestamp}.json`);
+        
+    } catch (error) {
+        console.error('❌ 삭제 작업 중 오류 발생:', error.message);
+    }
+    
+    return undoResults;
 }
 
-module.exports = { recoverImages };
+// 스크립트 실행
+if (require.main === module) {
+    const args = process.argv.slice(2);
+    if (args[0] === 'undo' && args[1]) {
+        undoIncorrectRecoveries(args[1]);
+    } else {
+        recoverImages();
+    }
+}
+
+module.exports = { recoverImages, undoIncorrectRecoveries };
