@@ -145,7 +145,19 @@ class DetailImageCollector {
                 const fileContent = await fs.readFile(filePath, 'utf8');
                 const data = JSON.parse(fileContent);
                 
-                this.productData[category] = data.products || [];
+                // 데이터 구조 확인 및 적절한 처리
+                if (Array.isArray(data)) {
+                    // 악세사리처럼 직접 배열인 경우
+                    this.productData[category] = data;
+                } else if (data.products && Array.isArray(data.products)) {
+                    // 일반적인 { products: [...] } 구조
+                    this.productData[category] = data.products;
+                } else {
+                    // 예상하지 못한 구조
+                    console.log(`   ⚠️  ${category}: 예상하지 못한 데이터 구조`);
+                    this.productData[category] = [];
+                }
+                
                 this.stats.totalProductsScanned += this.productData[category].length;
                 
                 console.log(`   ${category}: ${this.productData[category].length}개 제품`);
