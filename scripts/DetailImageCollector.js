@@ -40,6 +40,7 @@ class DetailImageCollector {
             totalProductsScanned: 0,
             productsNeedingDetails: 0,
             productsAlreadyHaveDetails: 0,
+            productsWithSufficientImages: 0,  // 9개 이상 상세 이미지 보유 상품
             productsSkipped: 0,
             
             detailPagesVisited: 0,
@@ -54,7 +55,10 @@ class DetailImageCollector {
             
             networkErrors: 0,
             parseErrors: 0,
-            fileSystemErrors: 0
+            fileSystemErrors: 0,
+            
+            // 효율성 통계
+            networkRequestsSaved: 0  // 9개 이상 보유로 절약된 네트워크 요청 수
         };
         
         this.results = {
@@ -251,8 +255,26 @@ class DetailImageCollector {
             return;
         }
         
-        // 2. 상세 페이지 방문 및 이미지 수집 (개별 파일별 존재 확인)
-        console.log(`     🔍 검사 중: ${product.productName}`);
+        // 2. 상세 이미지 개수 사전 체크 (9개 이상이면 수집 완료로 간주)
+        const detailImageCount = await this.countExistingDetailImages(productFolderPath);
+        
+        if (detailImageCount >= 9) {
+            console.log(`     ✅ 수집 완료: ${product.productName} (상세 이미지 ${detailImageCount}개 보유)`);
+            this.stats.productsWithSufficientImages++;
+            this.stats.networkRequestsSaved++; // 네트워크 요청 절약
+            this.results.skipped.push({
+                category: product.categoryName,
+                brand: product.brandName,
+                productName: product.productName,
+                reason: 'sufficient_detail_images',
+                detailImageCount: detailImageCount,
+                timestamp: new Date().toISOString()
+            });
+            return;
+        }
+        
+        // 3. 상세 페이지 방문 및 이미지 수집 (개별 파일별 존재 확인)
+        console.log(`     🔍 검사 중: ${product.productName} (현재 ${detailImageCount}개)`);
         this.stats.productsNeedingDetails++;
         
         const collectionResult = await this.collectDetailImagesFromUrl(product, productFolderPath);
@@ -268,9 +290,10 @@ class DetailImageCollector {
                 timestamp: new Date().toISOString()
             });
         } else if (collectionResult.success || collectionResult.downloadedCount > 0) {
+            const totalAfter = detailImageCount + collectionResult.downloadedCount;
             const statusText = collectionResult.skippedCount > 0 ? 
-                `(신규 ${collectionResult.downloadedCount}개, 기존 ${collectionResult.skippedCount}개)` :
-                `(${collectionResult.downloadedCount}개 이미지)`;
+                `(신규 ${collectionResult.downloadedCount}개, 기존 ${collectionResult.skippedCount}개, 총 ${totalAfter}개)` :
+                `(신규 ${collectionResult.downloadedCount}개, 총 ${totalAfter}개)`;
             console.log(`     ✅ 완료: ${product.productName} ${statusText}`);
             this.results.successful.push({
                 category: product.categoryName,
@@ -279,6 +302,8 @@ class DetailImageCollector {
                 detailUrl: product.detailUrl,
                 imagesDownloaded: collectionResult.downloadedCount,
                 imagesSkipped: collectionResult.skippedCount,
+                initialDetailCount: detailImageCount,
+                finalDetailCount: totalAfter,
                 downloadSize: collectionResult.totalSize,
                 timestamp: new Date().toISOString()
             });
@@ -315,6 +340,22 @@ class DetailImageCollector {
             
         } catch (error) {
             return null;
+        }
+    }
+
+    async countExistingDetailImages(productFolderPath) {
+        try {
+            const files = await fs.readdir(productFolderPath);
+            
+            // '상세_'로 시작하는 이미지 파일 개수 계산
+            const detailImageCount = files.filter(file => 
+                file.startsWith('상세_') && this.isImageFile(file)
+            ).length;
+            
+            return detailImageCount;
+            
+        } catch (error) {
+            return 0;
         }
     }
 
@@ -533,6 +574,7 @@ class DetailImageCollector {
                 totalProductsScanned: this.stats.totalProductsScanned,
                 productsNeedingDetails: this.stats.productsNeedingDetails,
                 productsAlreadyHaveDetails: this.stats.productsAlreadyHaveDetails,
+                productsWithSufficientImages: this.stats.productsWithSufficientImages,
                 productsSkipped: this.stats.productsSkipped,
                 
                 detailPagesVisited: this.stats.detailPagesVisited,
@@ -548,7 +590,12 @@ class DetailImageCollector {
                 
                 networkErrors: this.stats.networkErrors,
                 parseErrors: this.stats.parseErrors,
-                fileSystemErrors: this.stats.fileSystemErrors
+                fileSystemErrors: this.stats.fileSystemErrors,
+                
+                // 효율성 지표
+                networkRequestsSaved: this.stats.networkRequestsSaved,
+                efficiencyRate: this.stats.totalProductsScanned > 0 ?
+                    ((this.stats.networkRequestsSaved / this.stats.totalProductsScanned) * 100).toFixed(1) + '%' : '0%'
             },
             results: {
                 successful: this.results.successful.length,
@@ -572,8 +619,13 @@ class DetailImageCollector {
         console.log('\n📊 === 상세 이미지 수집 완료 보고서 ===');
         console.log(`전체 스캔: ${report.summary.totalProductsScanned.toLocaleString()}개 제품`);
         console.log(`수집 필요: ${report.summary.productsNeedingDetails.toLocaleString()}개`);
+        console.log(`충분한 이미지 보유: ${report.summary.productsWithSufficientImages.toLocaleString()}개 (9개 이상)`);
         console.log(`이미 완료: ${report.summary.productsAlreadyHaveDetails.toLocaleString()}개`);
         console.log(`스킵: ${report.summary.productsSkipped.toLocaleString()}개`);
+        console.log('');
+        console.log(`🚀 효율성 지표:`);
+        console.log(`   절약된 네트워크 요청: ${report.summary.networkRequestsSaved.toLocaleString()}개`);
+        console.log(`   효율성 향상률: ${report.summary.efficiencyRate}`);
         console.log('');
         console.log(`상세 페이지 방문: ${report.summary.detailPagesVisited.toLocaleString()}개`);
         console.log(`페이지 실패: ${report.summary.detailPagesFailed.toLocaleString()}개`);
