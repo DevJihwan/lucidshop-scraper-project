@@ -251,36 +251,34 @@ class DetailImageCollector {
             return;
         }
         
-        // 2. 이미 상세 이미지가 있는지 확인
-        const hasDetailImages = await this.checkExistingDetailImages(productFolderPath);
+        // 2. 상세 페이지 방문 및 이미지 수집 (개별 파일별 존재 확인)
+        console.log(`     🔍 검사 중: ${product.productName}`);
+        this.stats.productsNeedingDetails++;
         
-        if (hasDetailImages) {
-            console.log(`     ✅ 이미 보유: ${product.productName}`);
+        const collectionResult = await this.collectDetailImagesFromUrl(product, productFolderPath);
+        
+        if (collectionResult.allSkipped) {
+            console.log(`     ✅ 이미 완료: ${product.productName} (모든 상세 이미지 보유)`);
             this.stats.productsAlreadyHaveDetails++;
             this.results.skipped.push({
                 category: product.categoryName,
                 brand: product.brandName,
                 productName: product.productName,
-                reason: 'already_has_detail_images',
+                reason: 'all_detail_images_exist',
                 timestamp: new Date().toISOString()
             });
-            return;
-        }
-        
-        // 3. 상세 페이지 방문 및 이미지 수집
-        console.log(`     🔍 수집 중: ${product.productName}`);
-        this.stats.productsNeedingDetails++;
-        
-        const collectionResult = await this.collectDetailImagesFromUrl(product, productFolderPath);
-        
-        if (collectionResult.success) {
-            console.log(`     ✅ 완료: ${product.productName} (${collectionResult.downloadedCount}개 이미지)`);
+        } else if (collectionResult.success || collectionResult.downloadedCount > 0) {
+            const statusText = collectionResult.skippedCount > 0 ? 
+                `(신규 ${collectionResult.downloadedCount}개, 기존 ${collectionResult.skippedCount}개)` :
+                `(${collectionResult.downloadedCount}개 이미지)`;
+            console.log(`     ✅ 완료: ${product.productName} ${statusText}`);
             this.results.successful.push({
                 category: product.categoryName,
                 brand: product.brandName,
                 productName: product.productName,
                 detailUrl: product.detailUrl,
                 imagesDownloaded: collectionResult.downloadedCount,
+                imagesSkipped: collectionResult.skippedCount,
                 downloadSize: collectionResult.totalSize,
                 timestamp: new Date().toISOString()
             });
@@ -320,27 +318,13 @@ class DetailImageCollector {
         }
     }
 
-    async checkExistingDetailImages(productFolderPath) {
-        try {
-            const files = await fs.readdir(productFolderPath);
-            
-            // '상세_'로 시작하는 이미지 파일이 있는지 확인
-            const hasDetailImages = files.some(file => 
-                file.startsWith('상세_') && this.isImageFile(file)
-            );
-            
-            return hasDetailImages;
-            
-        } catch (error) {
-            return false;
-        }
-    }
-
     async collectDetailImagesFromUrl(product, productFolderPath) {
         const result = {
             success: false,
             downloadedCount: 0,
+            skippedCount: 0,
             totalSize: 0,
+            allSkipped: false,
             error: null
         };
         
@@ -361,24 +345,35 @@ class DetailImageCollector {
             
             this.stats.totalDetailImagesFound += imageUrls.length;
             
-            // 3. 각 이미지 다운로드
+            // 3. 각 이미지별로 존재 확인 및 다운로드
+            let processedImages = 0;
+            
             for (let i = 0; i < imageUrls.length; i++) {
                 const imageUrl = imageUrls[i];
                 
                 try {
-                    const downloadResult = await this.downloadDetailImage(imageUrl, productFolderPath);
+                    // 개별 이미지 파일 존재 확인 및 다운로드
+                    const downloadResult = await this.downloadDetailImageWithCheck(imageUrl, productFolderPath);
                     
-                    if (downloadResult.success) {
+                    if (downloadResult.alreadyExists) {
+                        result.skippedCount++;
+                        this.stats.totalDetailImagesSkipped++;
+                        console.log(`       ⚠️  이미 존재: ${downloadResult.fileName}`);
+                    } else if (downloadResult.success) {
                         result.downloadedCount++;
                         result.totalSize += downloadResult.fileSize;
                         this.stats.totalDetailImagesDownloaded++;
                         this.stats.totalDownloadSize += downloadResult.fileSize;
+                        console.log(`       ✅ 다운로드: ${downloadResult.fileName} (${(downloadResult.fileSize / 1024).toFixed(1)}KB)`);
                     } else {
                         this.stats.totalDetailImagesFailed++;
+                        console.log(`       ❌ 실패: ${imageUrl} - ${downloadResult.error}`);
                     }
                     
+                    processedImages++;
+                    
                 } catch (error) {
-                    console.log(`       ❌ 이미지 다운로드 실패: ${imageUrl} - ${error.message}`);
+                    console.log(`       ❌ 이미지 처리 실패: ${imageUrl} - ${error.message}`);
                     this.stats.totalDetailImagesFailed++;
                 }
                 
@@ -386,10 +381,12 @@ class DetailImageCollector {
                 await this.delay(500);
             }
             
-            result.success = result.downloadedCount > 0;
+            // 4. 결과 판정
+            result.allSkipped = (result.skippedCount === imageUrls.length);
+            result.success = (result.downloadedCount > 0) || result.allSkipped;
             
-            if (!result.success) {
-                result.error = 'all_image_downloads_failed';
+            if (!result.success && processedImages === 0) {
+                result.error = 'all_image_processing_failed';
             }
             
         } catch (error) {
@@ -445,11 +442,13 @@ class DetailImageCollector {
         }
     }
 
-    async downloadDetailImage(imageUrl, productFolderPath) {
+    async downloadDetailImageWithCheck(imageUrl, productFolderPath) {
         const result = {
             success: false,
+            alreadyExists: false,
             fileSize: 0,
-            fileName: null
+            fileName: null,
+            error: null
         };
         
         try {
@@ -461,15 +460,17 @@ class DetailImageCollector {
             const savedFileName = `상세_${originalFileName}`;
             const savedFilePath = path.join(productFolderPath, savedFileName);
             
-            // 이미 존재하는지 확인
+            result.fileName = savedFileName;
+            
+            // 이미 존재하는지 확인 (개별 파일별로)
             try {
-                await fs.access(savedFilePath);
-                console.log(`       ⚠️  이미 존재함: ${savedFileName}`);
-                this.stats.totalDetailImagesSkipped++;
-                result.success = true; // 이미 존재하므로 성공으로 처리
+                const stats = await fs.stat(savedFilePath);
+                result.alreadyExists = true;
+                result.success = true;
+                result.fileSize = stats.size;
                 return result;
             } catch (error) {
-                // 파일이 존재하지 않음 (정상)
+                // 파일이 존재하지 않음 (정상 - 다운로드 진행)
             }
             
             // 이미지 다운로드
@@ -480,7 +481,7 @@ class DetailImageCollector {
             
             // 파일 크기 확인 (너무 작은 이미지 필터링)
             if (response.data.length < 5000) { // 5KB 미만
-                console.log(`       ⚠️  이미지 너무 작음: ${savedFileName} (${response.data.length} bytes)`);
+                result.error = `image_too_small: ${response.data.length} bytes`;
                 return result;
             }
             
@@ -489,18 +490,17 @@ class DetailImageCollector {
             
             result.success = true;
             result.fileSize = response.data.length;
-            result.fileName = savedFileName;
-            
-            console.log(`       ✅ 다운로드: ${savedFileName} (${(response.data.length / 1024).toFixed(1)}KB)`);
             
         } catch (error) {
             if (error.code === 'ENOSPC') {
                 this.stats.fileSystemErrors++;
-                throw new Error('디스크 공간 부족');
+                result.error = 'disk_space_full';
             } else if (error.response && error.response.status === 404) {
-                console.log(`       ⚠️  이미지 없음: ${imageUrl}`);
+                result.error = 'image_not_found';
+            } else if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT') {
+                result.error = 'network_timeout';
             } else {
-                throw error;
+                result.error = `download_error: ${error.message}`;
             }
         }
         
@@ -572,7 +572,7 @@ class DetailImageCollector {
         console.log('\n📊 === 상세 이미지 수집 완료 보고서 ===');
         console.log(`전체 스캔: ${report.summary.totalProductsScanned.toLocaleString()}개 제품`);
         console.log(`수집 필요: ${report.summary.productsNeedingDetails.toLocaleString()}개`);
-        console.log(`이미 보유: ${report.summary.productsAlreadyHaveDetails.toLocaleString()}개`);
+        console.log(`이미 완료: ${report.summary.productsAlreadyHaveDetails.toLocaleString()}개`);
         console.log(`스킵: ${report.summary.productsSkipped.toLocaleString()}개`);
         console.log('');
         console.log(`상세 페이지 방문: ${report.summary.detailPagesVisited.toLocaleString()}개`);
@@ -580,8 +580,8 @@ class DetailImageCollector {
         console.log('');
         console.log(`발견 이미지: ${report.summary.totalDetailImagesFound.toLocaleString()}개`);
         console.log(`다운로드 성공: ${report.summary.totalDetailImagesDownloaded.toLocaleString()}개`);
+        console.log(`이미 보유: ${report.summary.totalDetailImagesSkipped.toLocaleString()}개`);
         console.log(`다운로드 실패: ${report.summary.totalDetailImagesFailed.toLocaleString()}개`);
-        console.log(`중복 스킵: ${report.summary.totalDetailImagesSkipped.toLocaleString()}개`);
         console.log('');
         console.log(`총 다운로드: ${report.summary.totalDownloadSizeMB} MB`);
         console.log(`성공률: ${report.results.successRate}`);
