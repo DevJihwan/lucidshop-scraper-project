@@ -338,8 +338,17 @@ class DetailImageCollector {
             const savedImageName = product.savedImageName;
             if (!savedImageName) return null;
             
-            // 파일 확장자 제거하여 폴더명 생성
-            const folderName = savedImageName.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+            // 파일 확장자 제거
+            let folderName = savedImageName.replace(/\.(jpg|jpeg|png|webp)$/i, '');
+            
+            // 앞의 "카테고리_" 부분 제거 (예: "가방_" 제거)
+            const categoryPrefix = `${product.categoryName}_`;
+            if (folderName.startsWith(categoryPrefix)) {
+                folderName = folderName.substring(categoryPrefix.length);
+            }
+            
+            // 공백을 언더스코어로 변환
+            folderName = folderName.replace(/\s+/g, '_');
             
             const categoryPath = path.join(this.finalImagePath, product.categoryName);
             const brandPath = path.join(categoryPath, product.brandName);
